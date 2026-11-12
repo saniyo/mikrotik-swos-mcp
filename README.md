@@ -17,10 +17,21 @@ and upload `.swb` backups by hand.
   `.swb` can be restored live by applying only the forms that differ, without a reboot.
 - **Gentle on production switches.** One request at a time, at least 0.2 s between requests, a 3 s cache and no background
   polling.
+- **Verifiable.** `verify/` renders the switch's own web UI offline on captured data and compares every value it shows
+  with the decoder (see [Verification](#verification)).
 
-Tested on **CSS610-8G-2S+ with SwOS Lite 2.18 and 2.21** (three switches in production use). Other SwOS Lite devices
-probably work because everything is read from the device. Full SwOS (CRS3xx, CSS326) is **untested**. Reports and PRs are
-welcome.
+## Supported devices
+
+| Device / firmware | Status |
+|---|---|
+| CSS610-8G-2S+, SwOS Lite 2.21 | **Verified against the web UI** on 3 production switches: 3,251 displayed values, 0 mismatches. Live write tested (identity round trip, read back, no reboot) |
+| CSS610-8G-2S+, SwOS Lite 2.18 | Used in production before an upgrade: reads, backups and dry runs; `.swb` decoding byte-checked. Parser OK |
+| CSS610-8G-2S+, SwOS Lite 2.20 | Parser OK on the reference `engine.js` from lanrat/python-mikrotik-swos (no device test) |
+| CSS610-8P-2S+ (PoE), SwOS Lite 2.20 | Parser OK on the reference `engine.js`, PoE tab included (no device test) |
+| Full SwOS (CRS305/309/310/326, CSS326) | **Not supported yet.** Same UI framework, but descriptive keys, variable port count and >32-bit masks. Parser fails on the reference files |
+
+Other SwOS Lite devices probably work because everything is read from the device. Please run `verify/` on yours and open
+an issue with the result line.
 
 ## Install
 
@@ -111,21 +122,60 @@ APPLIED - 192.168.88.1
   names (`G`) and property names (`m`) differ between builds, so the parser identifies them by code signatures (for example,
   the checkbox type is the one whose parser contains `>>1&2147483647`).
 
+## Verification
+
+The decoder is checked against the switch's **own** web UI, not against a hand-written expectation:
+
+```bash
+python verify/make_harness.py core          # captures each section once (read-only), builds verify/out/<ip>/
+python -m http.server 8765 --bind 127.0.0.1 --directory verify/out
+# open http://127.0.0.1:8765/<ip>/index.html and wait a few seconds
+```
+
+The page is the switch's real `index.html` + `engine.js`, fed with the captured data through a fake `XMLHttpRequest`, so it
+never talks to the switch (POSTs are dropped). It renders every tab and compares each input, select, checkbox and read-only
+value with the decoder. The result line reads like `ok 870, blank=default 117, mismatch 0, missing 3, extra 0`:
+
+- `blank=default`: the UI leaves a field empty when it holds its default value (for example `0.0.0.0`).
+- `missing 3`: Root Bridge and Allow From are composite fields that the UI shows as one combined input
+  (`8000.aa:bb:cc:dd:ee:ff`). They are expected; check them by eye.
+- `extra`: a UI element the decoder does not know. It should be 0. Anything else is a bug, so please report it.
+
+Keys that the switch sends but no UI field shows (SwOS Lite 2.21): `sys.b` `i02` current IP, `i06` version,
+`i0b` build time, `i0c` upgrade flag, `i0d` watchdog (shown on 2.18, hidden on 2.21); `link.b` `i09` per-port
+counter (lanrat names it port uptime; the unit is unverified); `rstp.b` `i04` matches the STP path cost (4 / 19 / 100 for
+1G / 100M / 10M links). The rest are zero and not referenced by `engine.js`: `sys.b` `i15 i16 i1c-i1f i20 i21 i23-i26 i2b`,
+`link.b` `i0b i0c`, `sfp.b` `i07`, `stats.b` `i03`.
+
+## Comparison with related projects
+
+| | this project | [MikroMCP](https://github.com/AliKarami/MikroMCP) | [python-mikrotik-swos](https://github.com/lanrat/python-mikrotik-swos) |
+|---|---|---|---|
+| Type | MCP server (Python) | MCP server (TypeScript, RouterOS + SwOS) | Library, CLI, Ansible (Python) |
+| Field map | read from each switch's `engine.js` at runtime | static tables | static tables per platform |
+| SwOS Lite / full SwOS | Lite only (for now) | both (SwOS marked experimental) | both, more devices |
+| Coverage | every web-UI field (generic `set_field`) | sys, link, fwd, VLAN, LACP, SNMP, PoE, upgrade | sys, ports, PoE, LAG, VLAN, SNMP, password |
+| Write safety | dry run + token, read-back, changelog, backup | dry run, lockout guard, snapshot/rollback | Ansible check mode |
+| Restore | live (only differing forms) or upload + reboot | upload + reboot | upload |
+| `.swb` decode / diff | yes | no | no |
+| Verified against the UI | yes (`verify/`) | no | no |
+
+Not here yet, worth adopting: full SwOS, a hard lockout guard (MikroMCP), PoE convenience tools, firmware upgrade.
+
 ## Safety notes
 
 - Fields that affect management access (IP, Allow From, VLAN changes) produce warnings in the dry run. Unlike some related
   projects, there is **no automatic lockout guard yet**, so review VLAN changes on the uplink port yourself.
 - The admin password is never changed. A live restore never touches the password either.
 - Static hosts and ACL entries are read and diffed but have no dedicated write tool; use `restore_backup` instead.
+- `verify/` and all read tools never write. The verify page drops every POST.
 
 ## Related projects
 
-- [AliKarami/MikroMCP](https://github.com/AliKarami/MikroMCP): MCP server for RouterOS plus SwOS / SwOS Lite (experimental),
-  with a declarative YAML apply and lockout guards. It uses static field tables.
-- [lanrat/python-mikrotik-swos](https://github.com/lanrat/python-mikrotik-swos): Python library, CLI and Ansible module for
-  SwOS and SwOS Lite with broad device coverage.
-- [tofkamp/mikrotik_swos](https://github.com/tofkamp/mikrotik_swos): Python library for SwOS.
-- [probert94/python-switchos](https://github.com/probert94/python-switchos): successor of python-swos-lite (Home Assistant).
+- [AliKarami/MikroMCP](https://github.com/AliKarami/MikroMCP), [lanrat/python-mikrotik-swos](https://github.com/lanrat/python-mikrotik-swos)
+  (its `webui_reference/` and field maps were used as an independent cross-check: every SwOS Lite key they map agrees
+  with ours), [tofkamp/mikrotik_swos](https://github.com/tofkamp/mikrotik_swos),
+  [probert94/python-switchos](https://github.com/probert94/python-switchos).
 
 ## License
 

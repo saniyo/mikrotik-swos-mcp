@@ -5,3 +5,4 @@ configs/
 __pycache__/
 *.pyc
 .venv/
+verify/out/

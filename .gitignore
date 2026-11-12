@@ -1,0 +1,7 @@
+# local configuration and data (IPs, passwords, backups) stay private
+switches.json
+configs/
+*.swb
+__pycache__/
+*.pyc
+.venv/

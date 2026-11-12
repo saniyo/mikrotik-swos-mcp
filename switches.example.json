@@ -1,0 +1,10 @@
+{
+  "user": "admin",
+  "configs_dir": "configs",
+  "changelog": "configs/CHANGELOG.md",
+  "_password_help": "Fill \"password\" per switch, or set SWOS_PASSWORD_192_168_88_1 (one switch) / SWOS_PASSWORD (all). Env vars win.",
+  "switches": [
+    {"ip": "192.168.88.1", "name": "core", "password": "", "note": "CSS610-8G-2S+ in rack A"},
+    {"ip": "192.168.88.2", "name": "edge", "password": "", "note": "second switch"}
+  ]
+}

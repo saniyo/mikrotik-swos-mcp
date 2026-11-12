@@ -15,6 +15,7 @@ import datetime
 import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -234,9 +235,11 @@ class Schema:
         self.types = {self.T_RO: 'ro'}
         for kind, snip in (('check', '>>1&2147483647|('), ('select', '("select")'), ('num', '"k"=='),
                            ('snum', '2147483648'), ('ip', '>>=8'), ('mac', '12!='),
-                           ('str', '.replace(/{(\\w+)}/'), ('uptime', ' days ')):
+                           ('str', '.replace(/{(\\w+)}/'), ('uptime', ' days '), ('pairs', '"<span title="+')):
             name = _owner(js, snip)
             if not name:
+                if kind in ('snum', 'uptime', 'pairs'):     # optional: not every build has them (CSS610-8P: no cable test)
+                    continue
                 raise SwosError(f'engine.js: type {kind} not found')
             self.types[name] = kind
 
@@ -254,6 +257,10 @@ class Schema:
         self.P_KMG = prop(r'\w+\.([\w$]+)&&\(1E9<\w+\?')
         self.P_MAXENT = prop(r'\w+\.\w+\.([\w$]+)&&\w+\.\w+\.\1<=\w+\?\w+\(\w+\.status,["`]Max entries')
         self.P_UNIT = prop(r'""!=\w+&&\w+\.([\w$]+)&&\(\w+\+=\w+\.\1\)')
+        m = re.search(r'=\w+\.([\w$]+)-1;0<=\w+;--\w+\)\{(?:var|let) \w+=\w+>>\w+\.([\w$]+)\*\w+&\(1<<\w+\.\2\)-1;'
+                      r'void 0!=\w+\.([\w$]+)\[', js)
+        self.P_PAIRS = m.groups() if m else None      # cable test: (count prop, bits prop, symbols prop)
+        self.P_DEFAULT = prop(r'void 0==\w+&&\(\w+=\w+\.([\w$]+)\|\|0\)')
         self.version_ids = re.search(r'[\w$]+\(\w+\.(i[0-9a-f]{2})\)\+"\."\+\w+\.(i[0-9a-f]{2})', js)
         self.version_ids = self.version_ids.groups() if self.version_ids else ('i06', 'i0b')
         # form constructors
@@ -342,6 +349,10 @@ class Schema:
                     opts=opts, bitpack=bool(it.get(self.P_BIT)), bithi=it.get(self.P_BITHI) if it.get(self.P_BIT) else None,
                     hiword=it.get(self.P_HIWORD), maxlen=it.get(self.P_MAXLEN) or 15, base=it.get(self.P_BASE) or 10,
                     scale=it.get('scale'), kmg=it.get(self.P_KMG) == 1, min=it.get('min'), max=it.get('max'), unique=bool(it.get('unique')),
+                    unit=it.get(self.P_UNIT) if isinstance(it.get(self.P_UNIT), str) else None,
+                    pairs=(it.get(self.P_PAIRS[0]), it.get(self.P_PAIRS[1]), it.get(self.P_PAIRS[2]))
+                    if kind == 'pairs' and self.P_PAIRS else None,
+                    default=it.get(self.P_DEFAULT) if self.P_DEFAULT else None,
                     _named=bool(it.get('n'))))
 
     @staticmethod
@@ -414,6 +425,10 @@ def show(f, v):
     if k == 'ip':
         v = int(v)
         return '.'.join(str(v >> s & 255) for s in (0, 8, 16, 24))
+    if k == 'pairs' and f.pairs and isinstance(f.pairs[2], list):   # cable pairs: n fields of `bits` bits
+        n, bits, sym = f.pairs
+        return ''.join(sym[int(v) >> (bits * i) & ((1 << bits) - 1)] for i in range(n - 1, -1, -1)
+                       if (int(v) >> (bits * i) & ((1 << bits) - 1)) < len(sym))
     if k == 'uptime':
         s = int(v / (f.scale or 1))
         d, s = divmod(s, 86400)
@@ -433,11 +448,12 @@ def show(f, v):
     if f.base == 16:
         return format(int(v), 'x')
     x = v / f.scale if f.scale else v
-    if getattr(f, 'kmg', False):                     # same k/M/G rounding as the web UI
+    if getattr(f, 'kmg', False):                     # same k/M/G rounding as the web UI (JS Math.round)
+        js_round = lambda y: math.floor(y + 0.5)
         for lim, suf in ((1e9, 'G'), (1e6, 'M'), (1e3, 'k')):
             if x > lim:
-                return f'{round(x / lim, 2):g}{suf}'
-        return str(round(x))
+                return f'{js_round(x / lim * 100) / 100:g}{suf}'
+        return str(js_round(x))
     return str(int(x) if float(x).is_integer() else round(x, 2))
 
 
